@@ -1,29 +1,46 @@
 jQuery(document).ready(function($) {
     // Обработка ручного перевода постов
-    $(document).on('click', '.manual-translate-post', function() {
+    $(document).on('click', '.manual-translate-post', function(e) {
+        e.preventDefault();
+
         var button = $(this);
         var postId = button.data('post-id');
         var language = button.data('language');
 
+        console.log('Manual translate clicked:', {postId: postId, language: language});
+
         button.prop('disabled', true).text(apyt_ajax.translating);
 
+        // Используем правильный nonce из localized script
         $.post(apyt_ajax.ajax_url, {
             action: 'manual_translate_post',
             post_id: postId,
             language: language,
             nonce: apyt_ajax.nonce
         }, function(response) {
+            console.log('Manual translate response:', response);
+
             if (response.success) {
                 var editLink = response.data.edit_link;
-                button.closest('.apyt-language-row').html(
-                    '<strong>' + button.closest('.apyt-language-row').find('strong').text() + '</strong> ✅ ' + apyt_ajax.success +
-                    ' <a href="' + editLink + '" class="button button-small">Редактировать</a>'
+                var row = button.closest('.apyt-language-row');
+                var languageName = row.find('strong').text();
+
+                row.html(
+                    '<strong>' + languageName + '</strong> ✅ ' + apyt_ajax.success +
+                    ' <a href="' + editLink + '" class="button button-small" target="_blank">Редактировать</a>' +
+                    ' <button type="button" class="button button-small update-translation-post" data-post-id="' + postId + '" data-language="' + language + '">Обновить</button>'
                 );
+
+                // Показываем уведомление
+                showNotification('✅ Перевод успешно создан!', 'success');
             } else {
                 button.text(apyt_ajax.error).prop('disabled', false);
-                alert(apyt_ajax.error + ': ' + response.data);
+                showNotification('❌ Ошибка перевода: ' + response.data, 'error');
+                console.error('Translation error:', response.data);
             }
         }).fail(function(xhr, status, error) {
+            console.error('AJAX error:', xhr, status, error);
+
             button.text(apyt_ajax.error).prop('disabled', false);
             var errorMsg = 'Ошибка сети: ' + error;
             if (xhr.responseText) {
@@ -36,15 +53,19 @@ jQuery(document).ready(function($) {
                     // Не JSON ответ
                 }
             }
-            alert(errorMsg);
+            showNotification('❌ ' + errorMsg, 'error');
         });
     });
 
     // Обновление существующего перевода
-    $(document).on('click', '.update-translation-post', function() {
+    $(document).on('click', '.update-translation-post', function(e) {
+        e.preventDefault();
+
         var button = $(this);
         var postId = button.data('post-id');
         var language = button.data('language');
+
+        console.log('Update translation clicked:', {postId: postId, language: language});
 
         button.prop('disabled', true).text('Обновление...');
 
@@ -54,18 +75,44 @@ jQuery(document).ready(function($) {
             language: language,
             nonce: apyt_ajax.nonce
         }, function(response) {
+            console.log('Update translation response:', response);
+
             if (response.success) {
                 button.text('✅ Обновлено').prop('disabled', true);
-                alert('Перевод успешно обновлен');
+                showNotification('✅ Перевод успешно обновлен!', 'success');
             } else {
                 button.text('Ошибка').prop('disabled', false);
-                alert('Ошибка обновления: ' + response.data);
+                showNotification('❌ Ошибка обновления: ' + response.data, 'error');
+                console.error('Update error:', response.data);
             }
         }).fail(function(xhr, status, error) {
+            console.error('AJAX error:', xhr, status, error);
+
             button.text('Ошибка сети').prop('disabled', false);
-            alert('Ошибка сети при обновлении: ' + error);
+            showNotification('❌ Ошибка сети при обновлении: ' + error, 'error');
         });
     });
+
+    // Функция для показа уведомлений
+    function showNotification(message, type) {
+        var noticeClass = type === 'success' ? 'notice-success' : 'notice-error';
+        var notice = $('<div class="notice ' + noticeClass + ' is-dismissible" style="margin: 10px 0; padding: 10px;"><p>' + message + '</p></div>');
+
+        // Добавляем уведомление в начало страницы
+        $('.wrap h1').after(notice);
+
+        // Автоматическое скрытие через 5 секунд
+        setTimeout(function() {
+            notice.fadeOut(300, function() {
+                $(this).remove();
+            });
+        }, 5000);
+
+        // Закрытие по клику
+        notice.on('click', '.notice-dismiss', function() {
+            notice.remove();
+        });
+    }
 
     // Тестирование API
     $('#test-translate').on('click', function() {
@@ -88,7 +135,7 @@ jQuery(document).ready(function($) {
         });
     });
 
-    // Массовый перевод записей
+    // Массовый перевод записей (10 шт)
     $('#bulk-translate-posts').on('click', function() {
         var button = $(this);
         button.prop('disabled', true).text('Начинаем перевод...');
@@ -103,7 +150,7 @@ jQuery(document).ready(function($) {
             } else {
                 $('#bulk-result').html('<div class="notice notice-error">' + response.data + '</div>');
             }
-            button.prop('disabled', false).text('Перевести записи');
+            button.prop('disabled', false).text('Перевести записи (10 шт)');
         }).fail(function(xhr, status, error) {
             var errorMsg = 'Ошибка сети: ' + error;
             if (xhr.responseText) {
@@ -117,7 +164,7 @@ jQuery(document).ready(function($) {
                 }
             }
             $('#bulk-result').html('<div class="notice notice-error">' + errorMsg + '</div>');
-            button.prop('disabled', false).text('Перевести записи');
+            button.prop('disabled', false).text('Перевести записи (10 шт)');
         });
     });
 
@@ -192,5 +239,4 @@ jQuery(document).ready(function($) {
             button.prop('disabled', false).text('Перевести кастомные записи');
         });
     });
-
 });

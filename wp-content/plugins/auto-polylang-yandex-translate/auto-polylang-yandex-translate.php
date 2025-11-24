@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Auto Polylang Yandex Translate
  * Description: Автоматическое создание и обновление переводов через Yandex Translate API для Polylang Pro
- * Version: 2.0.0
+ * Version: 2.1.0
  * Author: Page-Proofs
  * Text Domain: auto-polylang-yandex
  */

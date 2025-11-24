@@ -66,10 +66,10 @@ class APYT_Core {
 
     public function admin_init() {
         add_settings_section(
-            'apyt_main_section',
-            'Настройки автоматического перевода Yandex',
-            array($this, 'settings_section_callback'),
-            'apyt_settings'
+                'apyt_main_section',
+                'Настройки автоматического перевода Yandex',
+                array($this, 'settings_section_callback'),
+                'apyt_settings'
         );
 
         $this->add_settings_fields();
@@ -77,51 +77,51 @@ class APYT_Core {
 
     private function add_settings_fields() {
         $fields = array(
-            'apyt_yandex_api_key' => array(
-                'label' => 'Yandex Translate API Key',
-                'callback' => 'yandex_api_key_callback'
-            ),
-            'apyt_translate_folder_id' => array(
-                'label' => 'Folder ID (для IAM)',
-                'callback' => 'folder_id_callback'
-            ),
-            'apyt_auto_translate' => array(
-                'label' => 'Автоматический перевод',
-                'callback' => 'auto_translate_callback'
-            ),
-            'apyt_update_translations' => array(
-                'label' => 'Обновление переводов',
-                'callback' => 'update_translations_callback'
-            ),
-            'apyt_target_languages' => array(
-                'label' => 'Целевые языки',
-                'callback' => 'target_languages_callback'
-            ),
-            'apyt_post_types' => array(
-                'label' => 'Типы записей для перевода',
-                'callback' => 'post_types_callback'
-            ),
-            'apyt_taxonomies' => array(
-                'label' => 'Таксономии для перевода',
-                'callback' => 'taxonomies_callback'
-            ),
-            'apyt_translate_acf' => array(
-                'label' => 'Перевод ACF полей',
-                'callback' => 'translate_acf_callback'
-            ),
-            'apyt_translate_images' => array(
-                'label' => 'Копирование изображений',
-                'callback' => 'translate_images_callback'
-            )
+                'apyt_yandex_api_key' => array(
+                        'label' => 'Yandex Translate API Key',
+                        'callback' => 'yandex_api_key_callback'
+                ),
+                'apyt_translate_folder_id' => array(
+                        'label' => 'Folder ID (для IAM)',
+                        'callback' => 'folder_id_callback'
+                ),
+                'apyt_auto_translate' => array(
+                        'label' => 'Автоматический перевод',
+                        'callback' => 'auto_translate_callback'
+                ),
+                'apyt_update_translations' => array(
+                        'label' => 'Обновление переводов',
+                        'callback' => 'update_translations_callback'
+                ),
+                'apyt_target_languages' => array(
+                        'label' => 'Целевые языки',
+                        'callback' => 'target_languages_callback'
+                ),
+                'apyt_post_types' => array(
+                        'label' => 'Типы записей для перевода',
+                        'callback' => 'post_types_callback'
+                ),
+                'apyt_taxonomies' => array(
+                        'label' => 'Таксономии для перевода',
+                        'callback' => 'taxonomies_callback'
+                ),
+                'apyt_translate_acf' => array(
+                        'label' => 'Перевод ACF полей',
+                        'callback' => 'translate_acf_callback'
+                ),
+                'apyt_translate_images' => array(
+                        'label' => 'Копирование изображений',
+                        'callback' => 'translate_images_callback'
+                )
         );
 
         foreach ($fields as $field => $data) {
             add_settings_field(
-                $field,
-                $data['label'],
-                array($this, $data['callback']),
-                'apyt_settings',
-                'apyt_main_section'
+                    $field,
+                    $data['label'],
+                    array($this, $data['callback']),
+                    'apyt_settings',
+                    'apyt_main_section'
             );
         }
     }
@@ -132,23 +132,24 @@ class APYT_Core {
 
     public function add_admin_menu() {
         add_options_page(
-            'Auto Polylang Yandex Translate',
-            'Yandex Auto Translate',
-            'manage_options',
-            'auto-polylang-yandex-translate',
-            array($this, 'admin_page')
+                'Auto Polylang Yandex Translate',
+                'Yandex Auto Translate',
+                'manage_options',
+                'auto-polylang-yandex-translate',
+                array($this, 'admin_page')
         );
     }
 
     public function admin_scripts($hook) {
         if (in_array($hook, array('post.php', 'post-new.php', 'edit-tags.php', 'settings_page_auto-polylang-yandex-translate', 'edit.php'))) {
-            wp_enqueue_script('apyt-admin', plugin_dir_url(dirname(__FILE__)) . 'admin.js', array('jquery'), '2.0.0', true);
+            // ИСПРАВЛЕННЫЙ ПУТЬ К JS ФАЙЛУ
+            wp_enqueue_script('apyt-admin', plugin_dir_url(__FILE__) . '../admin.js', array('jquery'), '2.1.1', true);
             wp_localize_script('apyt-admin', 'apyt_ajax', array(
-                'ajax_url' => admin_url('admin-ajax.php'),
-                'nonce' => wp_create_nonce('apyt_manual_translate'),
-                'translating' => __('Перевод...', 'auto-polylang-yandex'),
-                'success' => __('Успешно переведено', 'auto-polylang-yandex'),
-                'error' => __('Ошибка перевода', 'auto-polylang-yandex')
+                    'ajax_url' => admin_url('admin-ajax.php'),
+                    'nonce' => wp_create_nonce('apyt_manual_translate'),
+                    'translating' => __('Перевод...', 'auto-polylang-yandex'),
+                    'success' => __('Успешно переведено', 'auto-polylang-yandex'),
+                    'error' => __('Ошибка перевода', 'auto-polylang-yandex')
             ));
         }
     }
@@ -172,7 +173,7 @@ class APYT_Core {
                 <h3>Массовый перевод</h3>
                 <div id="bulk-translate-section">
                     <p>Перевести все записи без переводов на выбранные языки:</p>
-                    <button id="bulk-translate-posts" class="button button-primary">Перевести записи</button>
+                    <button id="bulk-translate-posts" class="button button-primary">Перевести записи (10 шт)</button>
                     <button id="bulk-translate-terms" class="button button-primary">Перевести термины</button>
                     <div id="bulk-result" style="margin-top: 10px;"></div>
                 </div>
@@ -228,7 +229,7 @@ class APYT_Core {
                         } else {
                             $('#bulk-result').html('<div class="notice notice-error">' + response.data + '</div>');
                         }
-                        button.prop('disabled', false).text('Перевести записи');
+                        button.prop('disabled', false).text('Перевести записи (10 шт)');
                     });
                 });
 

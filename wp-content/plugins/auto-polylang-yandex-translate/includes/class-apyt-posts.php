@@ -6,7 +6,6 @@ class APYT_Posts {
     private static $processed_posts = array();
 
     public function __construct() {
-        // Используем хук с более высоким приоритетом и проверяем флаги
         add_action('save_post', array($this, 'handle_post_save'), 5, 3);
         add_action('add_meta_boxes', array($this, 'add_translate_meta_box'));
         add_action('wp_ajax_manual_translate_post', array($this, 'manual_translate_post'));
@@ -77,32 +76,25 @@ class APYT_Posts {
     }
 
     public function handle_post_save($post_id, $post, $update) {
-        // Глобальная защита от рекурсии
         if (self::$is_processing) {
             error_log("APYT: Global processing lock active, skipping post {$post_id}");
             return;
         }
 
-        // Проверяем, не обрабатывали ли мы уже этот пост в этом запросе
         if (in_array($post_id, self::$processed_posts)) {
             error_log("APYT: Post {$post_id} already processed in this request, skipping");
             return;
         }
 
-        // Проверяем транзиент для защиты от параллельных запросов
         $lock_key = 'apyt_processing_' . $post_id;
         if (get_transient($lock_key)) {
             error_log("APYT: Post {$post_id} is being processed by another request, skipping");
             return;
         }
 
-        // Устанавливаем блокировку на 30 секунд
         set_transient($lock_key, true, 30);
-
-        // Добавляем в обработанные
         self::$processed_posts[] = $post_id;
 
-        // Проверяем условия для перевода
         if (!$this->should_translate_post($post_id, $post, $update)) {
             delete_transient($lock_key);
             return;
@@ -127,14 +119,12 @@ class APYT_Posts {
 
         error_log("APYT: Starting translation for post {$post_id} to languages: " . implode(', ', $target_languages));
 
-        // Устанавливаем глобальный флаг обработки
         self::$is_processing = true;
 
         foreach ($target_languages as $target_lang) {
             $translation_id = pll_get_post($post_id, $target_lang);
 
             if (!$translation_id) {
-                // Создаем новый перевод
                 error_log("APYT: Creating translation for post {$post_id} to {$target_lang}");
                 $result = $this->create_post_translation($post_id, $source_language, $target_lang, $post);
                 if ($result) {
@@ -143,7 +133,6 @@ class APYT_Posts {
                     error_log("APYT: Failed to create translation for post {$post_id} to {$target_lang}");
                 }
             } elseif (get_option('apyt_update_translations') === 'yes') {
-                // Обновляем существующий перевод
                 error_log("APYT: Updating translation for post {$post_id} to {$target_lang}");
                 $result = $this->update_post_translation($post_id, $translation_id, $source_language, $target_lang, $post);
                 if ($result) {
@@ -154,7 +143,6 @@ class APYT_Posts {
             }
         }
 
-        // Снимаем блокировки
         self::$is_processing = false;
         delete_transient($lock_key);
 
@@ -162,44 +150,37 @@ class APYT_Posts {
     }
 
     private function should_translate_post($post_id, $post, $update) {
-        // Пропускаем ревизии
         if (wp_is_post_revision($post_id)) {
             error_log("APYT: Revision, skipping post {$post_id}");
             return false;
         }
 
-        // Пропускаем автосохранения
         if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) {
             error_log("APYT: Autosave, skipping post {$post_id}");
             return false;
         }
 
-        // Пропускаем черновики и авто-черновики
         if ($post->post_status === 'auto-draft' || $post->post_status === 'draft') {
             error_log("APYT: Draft or auto-draft, skipping post {$post_id}");
             return false;
         }
 
-        // Проверяем тип записи
         $enabled_post_types = get_option('apyt_post_types', array('post', 'page'));
         if (!in_array($post->post_type, $enabled_post_types)) {
             error_log("APYT: Post type {$post->post_type} not enabled for translation");
             return false;
         }
 
-        // Проверяем настройки автоперевода
         if (get_option('apyt_auto_translate') !== 'yes') {
             error_log("APYT: Auto translate disabled");
             return false;
         }
 
-        // Проверяем API ключ
         if (empty(get_option('apyt_yandex_api_key'))) {
             error_log("APYT: No API key configured");
             return false;
         }
 
-        // Проверяем, не является ли это переводом, созданным нашим плагином
         if (get_post_meta($post_id, '_apyt_created', true)) {
             error_log("APYT: Post {$post_id} was created by APYT, skipping");
             return false;
@@ -213,13 +194,11 @@ class APYT_Posts {
         $core = APYT_Core::get_instance();
 
         try {
-            // Переводим основные поля
             $translated_title = $core->api->translate_text($post->post_title, $target_lang, $source_lang);
             $translated_content = $core->api->translate_text($post->post_content, $target_lang, $source_lang);
             $translated_excerpt = $post->post_excerpt ?
                 $core->api->translate_text($post->post_excerpt, $target_lang, $source_lang) : '';
 
-            // Создаем переведенный пост
             $translated_post = array(
                 'post_title'    => $translated_title,
                 'post_content'  => $translated_content,
@@ -233,12 +212,8 @@ class APYT_Posts {
                 'ping_status'   => $post->ping_status,
             );
 
-            // Полностью отключаем наши хуки на время создания поста
             $this->disable_hooks();
-
             $new_post_id = wp_insert_post($translated_post, true);
-
-            // Восстанавливаем хуки
             $this->enable_hooks();
 
             if (is_wp_error($new_post_id)) {
@@ -247,23 +222,19 @@ class APYT_Posts {
             }
 
             if ($new_post_id) {
-                // Помечаем пост как созданный нашим плагином
                 update_post_meta($new_post_id, '_apyt_created', true);
                 update_post_meta($new_post_id, '_apyt_source_post', $post_id);
                 update_post_meta($new_post_id, '_apyt_source_lang', $source_lang);
 
-                // Устанавливаем язык и связываем переводы
                 pll_set_post_language($new_post_id, $target_lang);
 
                 $translations = pll_get_post_translations($post_id);
                 $translations[$target_lang] = $new_post_id;
                 pll_save_post_translations($translations);
 
-                // Копируем мета-данные и таксономии
                 $this->copy_post_meta($post_id, $new_post_id, $target_lang, $source_lang);
                 $this->copy_taxonomies($post_id, $new_post_id, $target_lang, $source_lang);
 
-                // Копируем ACF поля и изображения
                 if (get_option('apyt_translate_acf') === 'yes' && function_exists('get_field_objects')) {
                     $core->acf->copy_post_acf_fields($post_id, $new_post_id, $target_lang, $source_lang);
                 }
@@ -286,7 +257,6 @@ class APYT_Posts {
         $core = APYT_Core::get_instance();
 
         try {
-            // Переводим обновленные поля
             $translated_title = $core->api->translate_text($post->post_title, $target_lang, $source_lang);
             $translated_content = $core->api->translate_text($post->post_content, $target_lang, $source_lang);
             $translated_excerpt = $post->post_excerpt ?
@@ -299,12 +269,8 @@ class APYT_Posts {
                 'post_excerpt' => $translated_excerpt,
             );
 
-            // Отключаем хуки на время обновления
             $this->disable_hooks();
-
             $result = wp_update_post($updated_post, true);
-
-            // Восстанавливаем хуки
             $this->enable_hooks();
 
             if (is_wp_error($result)) {
@@ -312,11 +278,9 @@ class APYT_Posts {
                 return false;
             }
 
-            // Обновляем мета-данные и таксономии
             $this->copy_post_meta($source_post_id, $translation_id, $target_lang, $source_lang);
             $this->copy_taxonomies($source_post_id, $translation_id, $target_lang, $source_lang);
 
-            // Обновляем ACF поля и изображения
             if (get_option('apyt_translate_acf') === 'yes' && function_exists('get_field_objects')) {
                 $core->acf->copy_post_acf_fields($source_post_id, $translation_id, $target_lang, $source_lang);
             }
@@ -343,6 +307,7 @@ class APYT_Posts {
     }
 
     public function manual_translate_post() {
+        // Добавляем проверку nonce с правильным action
         if (!wp_verify_nonce($_POST['nonce'], 'apyt_manual_translate')) {
             wp_send_json_error('Security check failed');
         }
@@ -411,12 +376,8 @@ class APYT_Posts {
             wp_send_json_error('Post, language or translation not found');
         }
 
-        // Устанавливаем глобальный флаг
         self::$is_processing = true;
-
         $result = $this->update_post_translation($post_id, $translation_id, $source_lang, $target_lang, $post);
-
-        // Снимаем флаг
         self::$is_processing = false;
 
         if ($result) {
@@ -447,7 +408,6 @@ class APYT_Posts {
         $meta_data = get_post_meta($source_post_id);
 
         foreach ($meta_data as $key => $values) {
-            // Пропускаем системные мета-поля и наши служебные поля
             if (in_array($key, array('_edit_lock', '_edit_last', '_wp_old_slug', '_apyt_created', '_apyt_source_post', '_apyt_source_lang', '_thumbnail_id'))) continue;
 
             foreach ($values as $value) {

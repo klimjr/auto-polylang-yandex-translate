@@ -11,13 +11,11 @@ class APYT_Terms {
     }
 
     public function handle_term_save($term_id, $tt_id, $taxonomy) {
-        // Глобальная защита от рекурсии
         if (self::$is_processing) {
             error_log("APYT: Global processing lock active, skipping term {$term_id}");
             return;
         }
 
-        // Проверяем условия для перевода
         if (!$this->should_translate_term($term_id, $taxonomy)) {
             return;
         }
@@ -39,14 +37,12 @@ class APYT_Terms {
 
         error_log("APYT: Starting translation for term {$term_id} to languages: " . implode(', ', $target_languages));
 
-        // Устанавливаем глобальный флаг обработки
         self::$is_processing = true;
 
         foreach ($target_languages as $target_lang) {
             $translation_id = pll_get_term($term_id, $target_lang);
 
             if (!$translation_id) {
-                // Создаем новый перевод
                 error_log("APYT: Creating translation for term {$term_id} to {$target_lang}");
                 $result = $this->create_term_translation($term_id, $source_language, $target_lang, $taxonomy);
                 if ($result) {
@@ -55,7 +51,6 @@ class APYT_Terms {
                     error_log("APYT: Failed to create translation for term {$term_id} to {$target_lang}");
                 }
             } elseif (get_option('apyt_update_translations') === 'yes') {
-                // Обновляем существующий перевод
                 error_log("APYT: Updating translation for term {$term_id} to {$target_lang}");
                 $result = $this->update_term_translation($term_id, $translation_id, $source_language, $target_lang, $taxonomy);
                 if ($result) {
@@ -66,27 +61,22 @@ class APYT_Terms {
             }
         }
 
-        // Снимаем флаг
         self::$is_processing = false;
-
         error_log("APYT: Finished processing term {$term_id}");
     }
 
     private function should_translate_term($term_id, $taxonomy) {
-        // Проверяем тип таксономии
         $enabled_taxonomies = get_option('apyt_taxonomies', array('category', 'post_tag'));
         if (!in_array($taxonomy, $enabled_taxonomies)) {
             error_log("APYT: Taxonomy {$taxonomy} not enabled for translation");
             return false;
         }
 
-        // Проверяем настройки автоперевода
         if (get_option('apyt_auto_translate') !== 'yes') {
             error_log("APYT: Auto translate disabled");
             return false;
         }
 
-        // Проверяем API ключ
         if (empty(get_option('apyt_yandex_api_key'))) {
             error_log("APYT: No API key configured");
             return false;
@@ -109,7 +99,6 @@ class APYT_Terms {
         $translated_description = $term->description ?
             $core->api->translate_text($term->description, $target_lang, $source_lang) : '';
 
-        // Отключаем наши хуки
         $this->disable_hooks();
 
         $new_term = wp_insert_term($translated_name, $taxonomy, array(
@@ -118,7 +107,6 @@ class APYT_Terms {
             'parent'      => $term->parent
         ));
 
-        // Восстанавливаем хуки
         $this->enable_hooks();
 
         if (!is_wp_error($new_term)) {
@@ -128,7 +116,6 @@ class APYT_Terms {
             $term_translations[$target_lang] = $new_term['term_id'];
             pll_save_term_translations($term_translations);
 
-            // Копируем ACF поля для термина
             if (get_option('apyt_translate_acf') === 'yes' && function_exists('get_field_objects')) {
                 $core->acf->copy_term_acf_fields($term_id, $new_term['term_id'], $target_lang, $source_lang, $taxonomy);
             }
@@ -154,7 +141,6 @@ class APYT_Terms {
         $translated_description = $source_term->description ?
             $core->api->translate_text($source_term->description, $target_lang, $source_lang) : '';
 
-        // Отключаем наши хуки
         $this->disable_hooks();
 
         $updated_term = wp_update_term($translation_id, $taxonomy, array(
@@ -163,11 +149,9 @@ class APYT_Terms {
             'slug'        => sanitize_title($translated_name) . '-' . $target_lang,
         ));
 
-        // Восстанавливаем хуки
         $this->enable_hooks();
 
         if (!is_wp_error($updated_term)) {
-            // Обновляем ACF поля для термина
             if (get_option('apyt_translate_acf') === 'yes' && function_exists('get_field_objects')) {
                 $core->acf->copy_term_acf_fields($source_term_id, $translation_id, $target_lang, $source_lang, $taxonomy);
             }
@@ -214,18 +198,13 @@ class APYT_Terms {
             wp_send_json_error('Target language not configured in Polylang');
         }
 
-        // Проверяем, не существует ли уже перевод
         $existing_translation = pll_get_term($term_id, $target_lang);
         if ($existing_translation) {
             wp_send_json_error('Translation already exists');
         }
 
-        // Устанавливаем глобальный флаг
         self::$is_processing = true;
-
         $result = $this->create_term_translation($term_id, $source_lang, $target_lang, $taxonomy);
-
-        // Снимаем флаг
         self::$is_processing = false;
 
         if ($result) {
