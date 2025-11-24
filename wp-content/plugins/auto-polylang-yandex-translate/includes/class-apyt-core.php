@@ -144,6 +144,7 @@ class APYT_Core {
         if (in_array($hook, array('post.php', 'post-new.php', 'edit-tags.php', 'settings_page_auto-polylang-yandex-translate', 'edit.php'))) {
             // ИСПРАВЛЕННЫЙ ПУТЬ К JS ФАЙЛУ
             wp_enqueue_script('apyt-admin', plugin_dir_url(__FILE__) . '../admin.js', array('jquery'), '2.1.1', true);
+
             wp_localize_script('apyt-admin', 'apyt_ajax', array(
                     'ajax_url' => admin_url('admin-ajax.php'),
                     'nonce' => wp_create_nonce('apyt_manual_translate'),

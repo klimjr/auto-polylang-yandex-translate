@@ -107,6 +107,12 @@ class APYT_Bulk_Actions {
 
     // Новый метод для получения статистики перевода
     public function get_translation_stats() {
+
+        @set_time_limit(60);
+        if (function_exists('wp_raise_memory_limit')) {
+            wp_raise_memory_limit('admin');
+        }
+
         if (!wp_verify_nonce($_POST['nonce'], 'apyt_bulk_translate')) {
             wp_send_json_error('Security check failed');
         }
@@ -119,7 +125,15 @@ class APYT_Bulk_Actions {
         $target_languages = get_option('apyt_target_languages', array());
 
         if (empty($target_languages)) {
-            wp_send_json_error('Целевые языки не настроены');
+            wp_send_json_error('Целевые языки не настроены. Перейдите в настройки плагина и выберите языки для перевода.');
+        }
+
+        if (empty($post_types)) {
+            wp_send_json_error('Типы записей не настроены. Перейдите в настройки плагина и выберите типы записей для перевода.');
+        }
+
+        if (!function_exists('pll_languages_list')) {
+            wp_send_json_error('Polylang не активирован или не настроен.');
         }
 
         $stats = array(
@@ -127,12 +141,16 @@ class APYT_Bulk_Actions {
                 'posts_to_translate' => 0,
                 'post_types' => array()
         );
+        
 
         foreach ($post_types as $post_type) {
+            // Получаем общее количество записей
             $total_posts = wp_count_posts($post_type);
             $published_posts = $total_posts->publish;
-
-            $untranslated_posts = $this->get_untranslated_posts($post_type, $target_languages, 1);
+            
+            // Получаем непереведенные записи (большой лимит для точного подсчета)
+            $untranslated_posts = $this->get_untranslated_posts($post_type, $target_languages, 1000, 0);
+            
             $untranslated_count = count($untranslated_posts);
 
             $stats['total_posts'] += $published_posts;
@@ -142,7 +160,12 @@ class APYT_Bulk_Actions {
                     'untranslated' => $untranslated_count,
                     'label' => get_post_type_object($post_type)->label
             );
+
+            error_log("APYT STATS: {$post_type} - total: {$published_posts}, untranslated: {$untranslated_count}");
         }
+
+
+        error_log("APYT STATS: Total - posts: {$stats['total_posts']}, to translate: {$stats['posts_to_translate']}");
 
         wp_send_json_success($stats);
     }
@@ -256,49 +279,64 @@ class APYT_Bulk_Actions {
             $post_types = array($post_types);
         }
 
+
+        // Подготавливаем плейсхолдеры для типов записей
         $placeholders = implode(',', array_fill(0, count($post_types), '%s'));
         $post_types_sql = $wpdb->prepare($placeholders, $post_types);
 
+        // Получаем все опубликованные записи указанных типов
         $posts_query = "
-            SELECT ID, post_type, post_title 
-            FROM {$wpdb->posts} 
-            WHERE post_type IN ({$post_types_sql}) 
-            AND post_status = 'publish'
-            ORDER BY ID ASC 
-            LIMIT %d OFFSET %d
-        ";
+        SELECT p.ID, p.post_type, p.post_title 
+        FROM {$wpdb->posts} p
+        WHERE p.post_type IN ({$post_types_sql}) 
+        AND p.post_status = 'publish'
+        ORDER BY p.ID ASC 
+        LIMIT %d OFFSET %d
+    ";
 
         $posts = $wpdb->get_results($wpdb->prepare(
                 $posts_query,
-                array_merge($post_types, array($limit, $offset * $limit))
+                array($limit, $offset * $limit)
         ));
+
+        error_log("APYT BULK: Found " . count($posts) . " total posts in query");
 
         if (empty($posts)) {
             return array();
         }
 
-        // Фильтруем записи, у которых нет переводов для всех целевых языков
+        // Фильтруем записи, у которых нет переводов для ВСЕХ целевых языков
         $untranslated_posts = array();
+
         foreach ($posts as $post) {
             $source_language = pll_get_post_language($post->ID);
-            if (!$source_language) continue;
 
-            $needs_translation = false;
+            if (!$source_language) {
+                error_log("APYT BULK: Post {$post->ID} has no source language, skipping");
+                continue;
+            }
+
+            $missing_translations = array();
+
             foreach ($target_languages as $target_lang) {
                 if ($target_lang === $source_language) continue;
 
                 $translation_id = pll_get_post($post->ID, $target_lang);
                 if (!$translation_id) {
-                    $needs_translation = true;
-                    break;
+                    $missing_translations[] = $target_lang;
                 }
             }
 
-            if ($needs_translation) {
+            // Если есть хотя бы один язык без перевода - добавляем в список
+            if (!empty($missing_translations)) {
                 $untranslated_posts[] = $post;
+                error_log("APYT BULK: Post {$post->ID} missing translations for: " . implode(', ', $missing_translations));
+            } else {
+                error_log("APYT BULK: Post {$post->ID} has all translations");
             }
         }
 
+        error_log("APYT BULK: Filtered to " . count($untranslated_posts) . " untranslated posts");
         return $untranslated_posts;
     }
 
@@ -739,6 +777,9 @@ class APYT_Bulk_Actions {
                     var button = $(this);
                     button.prop('disabled', true).text('Загрузка...');
 
+                    // Показываем индикатор загрузки
+                    $('#bulk-stats').html('<div class="notice notice-info">🔍 Подсчет статистики...</div>').show();
+
                     $.post(ajaxurl, {
                         action: 'apyt_get_translation_stats',
                         nonce: '<?php echo wp_create_nonce("apyt_bulk_translate"); ?>'
@@ -749,13 +790,29 @@ class APYT_Bulk_Actions {
                             var stats = response.data;
                             var html = '<h4>📈 Статистика перевода:</h4>';
                             html += '<p><strong>Всего записей:</strong> ' + stats.total_posts + '</p>';
-                            html += '<p><strong>Требуют перевода:</strong> ' + stats.posts_to_translate + '</p>';
+                            html += '<p><strong>Требуют перевода:</strong> <span style="color: ' + (stats.posts_to_translate > 0 ? '#d63638' : '#00a32a') + '; font-weight: bold;">' + stats.posts_to_translate + '</span></p>';
+
+                            if (stats.posts_to_translate === 0) {
+                                html += '<div class="notice notice-warning" style="margin: 10px 0;">';
+                                html += '<p>⚠️ Не найдено записей, требующих перевода. Возможные причины:</p>';
+                                html += '<ul style="margin-left: 20px;">';
+                                html += '<li>Все записи уже переведены на выбранные языки</li>';
+                                html += '<li>Не настроены целевые языки в плагине</li>';
+                                html += '<li>Типы записей не выбраны для перевода</li>';
+                                html += '<li>Проблема с определением исходного языка записей</li>';
+                                html += '</ul>';
+                                html += '</div>';
+                            }
+
                             html += '<h4>📂 По типам записей:</h4>';
 
                             for (var post_type in stats.post_types) {
                                 if (stats.post_types.hasOwnProperty(post_type)) {
                                     var type = stats.post_types[post_type];
-                                    html += '<p><strong>' + type.label + ':</strong> ' + type.untranslated + ' из ' + type.total + ' требуют перевода</p>';
+                                    var status = type.untranslated > 0 ?
+                                        '<span style="color: #d63638">' + type.untranslated + ' из ' + type.total + ' требуют перевода</span>' :
+                                        '<span style="color: #00a32a">Все переведены (' + type.total + ')</span>';
+                                    html += '<p><strong>' + type.label + ':</strong> ' + status + '</p>';
                                 }
                             }
 
@@ -765,7 +822,18 @@ class APYT_Bulk_Actions {
                         }
                     }).fail(function(xhr, status, error) {
                         button.prop('disabled', false).text('📊 Показать статистику');
-                        $('#bulk-stats').html('<div class="notice notice-error">❌ Ошибка сети: ' + error + '</div>').show();
+                        var errorMsg = 'Ошибка сети: ' + error;
+                        if (xhr.responseText) {
+                            try {
+                                var jsonResponse = JSON.parse(xhr.responseText);
+                                if (jsonResponse.data) {
+                                    errorMsg = jsonResponse.data;
+                                }
+                            } catch(e) {
+                                // Не JSON ответ
+                            }
+                        }
+                        $('#bulk-stats').html('<div class="notice notice-error">❌ ' + errorMsg + '</div>').show();
                     });
                 });
 

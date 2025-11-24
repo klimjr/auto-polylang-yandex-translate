@@ -51,7 +51,42 @@ class APYT_ACF {
         }
     }
 
+    /**
+     * Обрабатывает перевод для post object полей
+     */
+    private function handle_post_object_translation($post_id, $target_lang, $source_lang) {
+        // Всегда сначала ищем существующий перевод
+        $translated_post_id = pll_get_post($post_id, $target_lang);
+
+        if ($translated_post_id) {
+            error_log("APYT ACF: Found existing translation for post {$post_id} to {$target_lang}: {$translated_post_id}");
+            return $translated_post_id;
+        }
+
+        error_log("APYT ACF: No translation found for post {$post_id} to {$target_lang}");
+
+        // Для ACF полей НЕ создаем автоматически переводы записей
+        // Это может вызвать бесконечные циклы и проблемы с производительностью
+        // Вместо этого используем оригинальную запись или пропускаем
+
+        // Проверяем существует ли оригинальная запись
+        if (get_post_status($post_id) === 'publish') {
+            error_log("APYT ACF: Using original post {$post_id} for language {$target_lang}");
+            return $post_id;
+        }
+
+        return false;
+    }
+
+
     public function translate_acf_field_value($value, $field, $target_lang, $source_lang, $target_id = null) {
+
+        // Проверяем, что поле существует и имеет тип
+        if (empty($field) || !isset($field['type'])) {
+            error_log("APYT ACF: Invalid field data provided");
+            return $value;
+        }
+
         $core = APYT_Core::get_instance();
         $field_type = $field['type'];
 
@@ -113,12 +148,19 @@ class APYT_ACF {
                     foreach ($value as $row_index => $row) {
                         $translated_row = array();
                         foreach ($row as $sub_field_name => $sub_value) {
+                            // Пропускаем служебные поля ACF
+                            if ($sub_field_name === 'acf_fc_layout') {
+                                $translated_row[$sub_field_name] = $sub_value;
+                                continue;
+                            }
+
                             $sub_field = $this->find_sub_field($field['sub_fields'], $sub_field_name);
                             if ($sub_field) {
                                 $translated_value = $this->translate_acf_field_value($sub_value, $sub_field, $target_lang, $source_lang, $target_id);
                                 $translated_row[$sub_field_name] = $translated_value;
                                 error_log("APYT ACF: Repeater row {$row_index}, field {$sub_field_name}: value processed");
                             } else {
+                                // Если не нашли определение поля, копируем как есть
                                 $translated_row[$sub_field_name] = $sub_value;
                             }
                         }
@@ -132,21 +174,29 @@ class APYT_ACF {
                 if (is_array($value) && !empty($value)) {
                     error_log("APYT ACF: Processing flexible content field {$field['name']} with " . count($value) . " layouts");
 
+                    $translated_flexible = array();
                     foreach ($value as $layout_index => $layout) {
                         if (isset($layout['acf_fc_layout'])) {
                             $layout_name = $layout['acf_fc_layout'];
+                            $translated_layout = array('acf_fc_layout' => $layout_name);
+
                             foreach ($layout as $sub_field_name => $sub_value) {
                                 if ($sub_field_name !== 'acf_fc_layout') {
                                     $layout_field = $this->find_flexible_field($field['layouts'], $layout_name, $sub_field_name);
                                     if ($layout_field) {
-                                        $value[$layout_index][$sub_field_name] = $this->translate_acf_field_value($sub_value, $layout_field, $target_lang, $source_lang, $target_id);
+                                        $translated_value = $this->translate_acf_field_value($sub_value, $layout_field, $target_lang, $source_lang, $target_id);
+                                        $translated_layout[$sub_field_name] = $translated_value;
                                         error_log("APYT ACF: Flexible content layout {$layout_name}, field {$sub_field_name}: value processed");
+                                    } else {
+                                        // Если не нашли определение поля, копируем как есть
+                                        $translated_layout[$sub_field_name] = $sub_value;
                                     }
                                 }
                             }
+                            $translated_flexible[] = $translated_layout;
                         }
                     }
-                    return $value;
+                    return $translated_flexible;
                 }
                 break;
 
@@ -154,14 +204,19 @@ class APYT_ACF {
                 if (is_array($value) && !empty($value)) {
                     error_log("APYT ACF: Processing group field {$field['name']}");
 
+                    $translated_group = array();
                     foreach ($value as $sub_field_name => $sub_value) {
                         $sub_field = $this->find_sub_field($field['sub_fields'], $sub_field_name);
                         if ($sub_field) {
-                            $value[$sub_field_name] = $this->translate_acf_field_value($sub_value, $sub_field, $target_lang, $source_lang, $target_id);
+                            $translated_value = $this->translate_acf_field_value($sub_value, $sub_field, $target_lang, $source_lang, $target_id);
+                            $translated_group[$sub_field_name] = $translated_value;
                             error_log("APYT ACF: Group field {$sub_field_name}: value processed");
+                        } else {
+                            // Если не нашли определение поля, копируем как есть
+                            $translated_group[$sub_field_name] = $sub_value;
                         }
                     }
-                    return $value;
+                    return $translated_group;
                 }
                 break;
 
@@ -171,32 +226,15 @@ class APYT_ACF {
                     // Множественный выбор
                     $translated_posts = array();
                     foreach ($value as $post_id) {
-                        $translated_post_id = pll_get_post($post_id, $target_lang);
-                        if ($translated_post_id && get_post_status($translated_post_id) === 'publish') {
+                        $translated_post_id = $this->handle_post_object_translation($post_id, $target_lang, $source_lang);
+                        if ($translated_post_id) {
                             $translated_posts[] = $translated_post_id;
-                            error_log("APYT ACF: Post object field {$field['name']}: {$post_id} -> {$translated_post_id}");
-                        } else {
-                            // Если перевода нет, оставляем оригинал (только если пост существует)
-                            if (get_post_status($post_id) === 'publish') {
-                                $translated_posts[] = $post_id;
-                                error_log("APYT ACF: Post object field {$field['name']}: {$post_id} (no translation, using original)");
-                            }
                         }
                     }
-                    return !empty($translated_posts) ? $translated_posts : $value;
+                    return !empty($translated_posts) ? $translated_posts : array();
                 } elseif (is_numeric($value) && $value > 0) {
                     // Одиночный выбор
-                    $translated_post_id = pll_get_post($value, $target_lang);
-                    if ($translated_post_id && get_post_status($translated_post_id) === 'publish') {
-                        error_log("APYT ACF: Post object field {$field['name']}: {$value} -> {$translated_post_id}");
-                        return $translated_post_id;
-                    } else {
-                        // Если перевода нет, оставляем оригинал (только если пост существует)
-                        if (get_post_status($value) === 'publish') {
-                            error_log("APYT ACF: Post object field {$field['name']}: {$value} (no translation, using original)");
-                            return $value;
-                        }
-                    }
+                    return $this->handle_post_object_translation($value, $target_lang, $source_lang);
                 }
                 break;
 
@@ -289,19 +327,29 @@ class APYT_ACF {
             return null;
         }
 
+        // Сначала ищем по name (основной способ)
         foreach ($sub_fields as $sub_field) {
-            if ($sub_field['name'] === $field_name) {
+            if (isset($sub_field['name']) && $sub_field['name'] === $field_name) {
                 return $sub_field;
             }
         }
 
-        // Если не нашли по name, попробуем по key
+        // Затем ищем по key (запасной способ)
         foreach ($sub_fields as $sub_field) {
-            if ($sub_field['key'] === $field_name) {
+            if (isset($sub_field['key']) && $sub_field['key'] === $field_name) {
                 return $sub_field;
             }
         }
 
+        // Пробуем найти по любому совпадению
+        foreach ($sub_fields as $sub_field) {
+            if ((isset($sub_field['name']) && $sub_field['name'] === $field_name) ||
+                (isset($sub_field['key']) && $sub_field['key'] === $field_name)) {
+                return $sub_field;
+            }
+        }
+
+        error_log("APYT ACF: Sub field not found: {$field_name}");
         return null;
     }
 
