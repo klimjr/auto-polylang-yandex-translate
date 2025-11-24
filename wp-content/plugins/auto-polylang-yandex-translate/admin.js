@@ -153,4 +153,44 @@ jQuery(document).ready(function($) {
             button.prop('disabled', false).text('Перевести термины');
         });
     });
+
+    // Массовый перевод кастомных типов записей
+    $('#bulk-translate-custom-posts').on('click', function() {
+        var button = $(this);
+        button.prop('disabled', true).text('Начинаем перевод...');
+        $('#bulk-custom-result').html('<div class="notice notice-info">Подготовка к переводу кастомных записей...</div>');
+
+        $.post(apyt_ajax.ajax_url, {
+            action: 'bulk_translate_custom_posts',
+            nonce: apyt_ajax.nonce
+        }, function(response) {
+            if (response.success) {
+                var postTypes = response.data.post_types ? response.data.post_types.join(', ') : 'кастомных типов';
+                $('#bulk-custom-result').html(
+                    '<div class="notice notice-success">' +
+                    '<p>' + response.data.message + '</p>' +
+                    '<p>Типы записей: ' + postTypes + '</p>' +
+                    '</div>'
+                );
+            } else {
+                $('#bulk-custom-result').html('<div class="notice notice-error">' + response.data + '</div>');
+            }
+            button.prop('disabled', false).text('Перевести кастомные записи');
+        }).fail(function(xhr, status, error) {
+            var errorMsg = 'Ошибка сети: ' + error;
+            if (xhr.responseText) {
+                try {
+                    var jsonResponse = JSON.parse(xhr.responseText);
+                    if (jsonResponse.data) {
+                        errorMsg = jsonResponse.data;
+                    }
+                } catch(e) {
+                    // Не JSON ответ
+                }
+            }
+            $('#bulk-custom-result').html('<div class="notice notice-error">' + errorMsg + '</div>');
+            button.prop('disabled', false).text('Перевести кастомные записи');
+        });
+    });
+
 });

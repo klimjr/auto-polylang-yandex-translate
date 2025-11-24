@@ -3,11 +3,8 @@
 class APYT_Bulk_Actions {
 
     public function __construct() {
-        // Bulk actions для постов
-        add_filter('bulk_actions-edit-post', array($this, 'add_bulk_actions'));
-        add_filter('bulk_actions-edit-page', array($this, 'add_bulk_actions'));
-        add_action('handle_bulk_actions-edit-post', array($this, 'handle_bulk_actions'), 10, 3);
-        add_action('handle_bulk_actions-edit-page', array($this, 'handle_bulk_actions'), 10, 3);
+        // Bulk actions для всех включенных типов записей
+        add_action('admin_init', array($this, 'add_bulk_actions_for_post_types'));
 
         // Bulk actions для таксономий
         add_filter('bulk_actions-edit-category', array($this, 'add_bulk_actions'));
@@ -17,17 +14,28 @@ class APYT_Bulk_Actions {
 
         // AJAX обработчики для массового перевода
         add_action('wp_ajax_bulk_translate_posts', array($this, 'bulk_translate_posts'));
+        add_action('wp_ajax_bulk_translate_custom_posts', array($this, 'bulk_translate_custom_posts'));
         add_action('wp_ajax_bulk_translate_terms', array($this, 'bulk_translate_terms'));
         add_action('wp_ajax_apyt_bulk_translate_taxonomy', array($this, 'apyt_bulk_translate_taxonomy'));
+        add_action('wp_ajax_apyt_bulk_translate_custom_post_type', array($this, 'apyt_bulk_translate_custom_post_type'));
 
         // Admin notices
         add_action('admin_notices', array($this, 'admin_notices'));
 
-        // Интерфейс массового перевода для таксономий
+        // Интерфейс массового перевода
         add_action('current_screen', array($this, 'add_bulk_translate_interface'));
 
         // Увеличиваем лимиты для AJAX запросов
         add_action('admin_init', array($this, 'increase_limits'));
+    }
+
+    public function add_bulk_actions_for_post_types() {
+        $enabled_post_types = get_option('apyt_post_types', array('post', 'page'));
+
+        foreach ($enabled_post_types as $post_type) {
+            add_filter("bulk_actions-edit-{$post_type}", array($this, 'add_bulk_actions'));
+            add_action("handle_bulk_actions-edit-{$post_type}", array($this, 'handle_bulk_actions'), 10, 3);
+        }
     }
 
     public function increase_limits() {
@@ -160,6 +168,169 @@ class APYT_Bulk_Actions {
                 'message' => sprintf('Перевод завершен. Успешно: %d, Ошибок: %d', $translated_count, $error_count),
                 'translated' => $translated_count,
                 'errors' => $error_count
+        ));
+    }
+
+    public function bulk_translate_custom_posts() {
+        // Увеличиваем лимиты
+        @set_time_limit(300);
+        if (function_exists('wp_raise_memory_limit')) {
+            wp_raise_memory_limit('admin');
+        }
+
+        if (!wp_verify_nonce($_POST['nonce'], 'apyt_bulk_translate')) {
+            wp_send_json_error('Security check failed');
+        }
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Insufficient permissions');
+        }
+
+        $post_types = get_option('apyt_post_types', array('post', 'page'));
+        $target_languages = get_option('apyt_target_languages', array());
+
+        if (empty($target_languages)) {
+            wp_send_json_error('Целевые языки не настроены');
+        }
+
+        $translated_count = 0;
+        $error_count = 0;
+        $core = APYT_Core::get_instance();
+
+        // Фильтруем только кастомные типы записей
+        $custom_post_types = array_filter($post_types, function($post_type) {
+            return !in_array($post_type, array('post', 'page'));
+        });
+
+        if (empty($custom_post_types)) {
+            wp_send_json_error('Нет настроенных кастомных типов записей');
+        }
+
+        // Ограничиваем количество постов
+        $limit = 15;
+        $processed = 0;
+
+        foreach ($custom_post_types as $post_type) {
+            if ($processed >= $limit) break;
+
+            $posts = get_posts(array(
+                    'post_type' => $post_type,
+                    'post_status' => 'publish',
+                    'numberposts' => 5, // По 5 постов на тип
+                    'orderby' => 'ID',
+                    'order' => 'ASC'
+            ));
+
+            foreach ($posts as $post) {
+                if ($processed >= $limit) break;
+
+                $source_language = pll_get_post_language($post->ID);
+                if (!$source_language) continue;
+
+                foreach ($target_languages as $target_lang) {
+                    if ($target_lang === $source_language) continue;
+
+                    $translation_id = pll_get_post($post->ID, $target_lang);
+                    if (!$translation_id) {
+                        $result = $core->posts->create_post_translation($post->ID, $source_language, $target_lang, $post);
+                        if ($result) {
+                            $translated_count++;
+                        } else {
+                            $error_count++;
+                        }
+                    }
+                }
+                $processed++;
+            }
+        }
+
+        wp_send_json_success(array(
+                'message' => sprintf('Перевод кастомных записей завершен. Успешно: %d, Ошибок: %d', $translated_count, $error_count),
+                'translated' => $translated_count,
+                'errors' => $error_count,
+                'post_types' => $custom_post_types
+        ));
+    }
+
+    public function apyt_bulk_translate_custom_post_type() {
+        // Увеличиваем лимиты для AJAX
+        @set_time_limit(300);
+        if (function_exists('wp_raise_memory_limit')) {
+            wp_raise_memory_limit('admin');
+        }
+
+        if (!wp_verify_nonce($_POST['nonce'], 'apyt_bulk_translate')) {
+            wp_send_json_error('Security check failed');
+        }
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Insufficient permissions');
+        }
+
+        $post_type = sanitize_text_field($_POST['post_type']);
+        $target_languages = get_option('apyt_target_languages', array());
+
+        if (empty($target_languages)) {
+            wp_send_json_error('Целевые языки не настроены');
+        }
+
+        // Проверяем, что тип записи включен в настройках
+        $enabled_post_types = get_option('apyt_post_types', array('post', 'page'));
+        if (!in_array($post_type, $enabled_post_types)) {
+            wp_send_json_error('Тип записи не включен в настройках перевода');
+        }
+
+        // Получаем посты с ограничением
+        $posts = get_posts(array(
+                'post_type' => $post_type,
+                'post_status' => 'publish',
+                'numberposts' => 10, // Ограничиваем для первого запуска
+                'orderby' => 'ID',
+                'order' => 'ASC'
+        ));
+
+        if (empty($posts)) {
+            wp_send_json_error('В этом типе записей нет материалов для перевода');
+        }
+
+        $translated_count = 0;
+        $error_count = 0;
+        $core = APYT_Core::get_instance();
+
+        foreach ($posts as $post) {
+            $source_language = pll_get_post_language($post->ID);
+            if (!$source_language) {
+                error_log("APYT: No source language for post {$post->ID}");
+                continue;
+            }
+
+            foreach ($target_languages as $target_lang) {
+                if ($target_lang === $source_language) continue;
+
+                $translation_id = pll_get_post($post->ID, $target_lang);
+                if (!$translation_id) {
+                    error_log("APYT: Creating translation for post {$post->ID} to {$target_lang}");
+                    $result = $core->posts->create_post_translation($post->ID, $source_language, $target_lang, $post);
+                    if ($result) {
+                        $translated_count++;
+                        error_log("APYT: Successfully translated post {$post->ID} to {$target_lang}");
+                    } else {
+                        $error_count++;
+                        error_log("APYT: Failed to translate post {$post->ID} to {$target_lang}");
+                    }
+                } else {
+                    error_log("APYT: Translation already exists for post {$post->ID} to {$target_lang}");
+                }
+            }
+        }
+
+        $post_type_name = get_post_type_object($post_type) ? get_post_type_object($post_type)->label : $post_type;
+
+        wp_send_json_success(array(
+                'message' => sprintf('Перевод типа записей "%s" завершен. Успешно: %d, Ошибок: %d', $post_type_name, $translated_count, $error_count),
+                'translated' => $translated_count,
+                'errors' => $error_count,
+                'total_posts' => count($posts)
         ));
     }
 
@@ -342,12 +513,202 @@ class APYT_Bulk_Actions {
     public function add_bulk_translate_interface() {
         $screen = get_current_screen();
 
-        if ($screen && in_array($screen->base, array('edit-tags', 'term'))) {
-            add_action('admin_notices', array($this, 'bulk_translate_notice'));
+        if ($screen) {
+            // Для таксономий
+            if (in_array($screen->base, array('edit-tags', 'term'))) {
+                add_action('admin_notices', array($this, 'bulk_translate_taxonomy_notice'));
+            }
+
+            // Для типов записей
+            if ($screen->base === 'edit' && !empty($screen->post_type)) {
+                add_action('admin_notices', array($this, 'bulk_translate_post_type_notice'));
+            }
+
+            // Для страницы настроек плагина
+            if ($screen->base === 'settings_page_auto-polylang-yandex-translate') {
+                add_action('admin_notices', array($this, 'bulk_translate_settings_notice'));
+            }
         }
     }
 
-    public function bulk_translate_notice() {
+    public function bulk_translate_settings_notice() {
+        if (!function_exists('pll_languages_list')) return;
+
+        $target_languages = get_option('apyt_target_languages', array());
+        if (empty($target_languages)) return;
+
+        $enabled_post_types = get_option('apyt_post_types', array('post', 'page'));
+        $custom_post_types = array_filter($enabled_post_types, function($post_type) {
+            return !in_array($post_type, array('post', 'page'));
+        });
+
+        ?>
+        <div class="notice notice-info">
+            <h3>Массовый перевод кастомных типов записей</h3>
+            <?php if (!empty($custom_post_types)): ?>
+                <p>Перевести материалы кастомных типов записей:</p>
+                <div id="custom-post-types-buttons">
+                    <?php foreach ($custom_post_types as $post_type):
+                        $post_type_obj = get_post_type_object($post_type);
+                        if ($post_type_obj):
+                            ?>
+                            <button type="button" class="button button-secondary apyt-bulk-translate-post-type"
+                                    data-post-type="<?php echo esc_attr($post_type); ?>"
+                                    style="margin: 2px;">
+                                Перевести "<?php echo esc_html($post_type_obj->label); ?>"
+                            </button>
+                        <?php endif; endforeach; ?>
+                </div>
+                <div id="custom-posts-result" style="margin-top: 10px;"></div>
+            <?php else: ?>
+                <p>Нет настроенных кастомных типов записей. Добавьте их в настройках выше.</p>
+            <?php endif; ?>
+        </div>
+
+        <script>
+            jQuery(document).ready(function($) {
+                $('.apyt-bulk-translate-post-type').on('click', function() {
+                    var button = $(this);
+                    var postType = button.data('post-type');
+
+                    button.prop('disabled', true).text('Перевод...');
+                    $('#custom-posts-result').html('<div class="notice notice-info">Подготовка к переводу...</div>');
+
+                    $.post(ajaxurl, {
+                        action: 'apyt_bulk_translate_custom_post_type',
+                        post_type: postType,
+                        nonce: '<?php echo wp_create_nonce("apyt_bulk_translate"); ?>'
+                    }, function(response) {
+                        if (response.success) {
+                            $('#custom-posts-result').html(
+                                '<div class="notice notice-success">' +
+                                '<p>' + response.data.message + '</p>' +
+                                '<p>Обработано материалов: ' + response.data.total_posts + '</p>' +
+                                '</div>'
+                            );
+                        } else {
+                            $('#custom-posts-result').html(
+                                '<div class="notice notice-error">' +
+                                '<p>Ошибка: ' + response.data + '</p>' +
+                                '</div>'
+                            );
+                        }
+                        button.prop('disabled', false).text('Перевести "' + postType + '"');
+                    }).fail(function(xhr, status, error) {
+                        var errorMessage = 'Ошибка сети: ' + error;
+                        if (xhr.responseText) {
+                            try {
+                                var jsonResponse = JSON.parse(xhr.responseText);
+                                if (jsonResponse.data) {
+                                    errorMessage = jsonResponse.data;
+                                }
+                            } catch(e) {
+                                // Не JSON ответ
+                            }
+                        }
+
+                        $('#custom-posts-result').html(
+                            '<div class="notice notice-error">' +
+                            '<p>' + errorMessage + '</p>' +
+                            '</div>'
+                        );
+                        button.prop('disabled', false).text('Перевести "' + postType + '"');
+                    });
+                });
+            });
+        </script>
+        <?php
+    }
+
+    public function bulk_translate_post_type_notice() {
+        if (!function_exists('pll_languages_list')) return;
+
+        $post_type = get_current_screen()->post_type;
+        $enabled_post_types = get_option('apyt_post_types', array('post', 'page'));
+
+        if (!in_array($post_type, $enabled_post_types)) return;
+
+        $target_languages = get_option('apyt_target_languages', array());
+        if (empty($target_languages)) return;
+
+        $post_type_obj = get_post_type_object($post_type);
+        if (!$post_type_obj) return;
+
+        ?>
+        <div class="notice notice-info">
+            <h3>Массовый перевод <?php echo esc_html($post_type_obj->labels->name); ?></h3>
+            <p>Перевести все материалы этого типа без переводов:</p>
+            <button id="apyt-bulk-translate-current-post-type" class="button button-primary"
+                    data-post-type="<?php echo esc_attr($post_type); ?>">
+                Перевести "<?php echo esc_html($post_type_obj->label); ?>"
+            </button>
+            <span id="apyt-bulk-posts-progress" style="margin-left: 10px; display: none;"></span>
+            <div id="apyt-bulk-posts-result" style="margin-top: 10px;"></div>
+
+            <div style="margin-top: 10px; font-size: 12px; color: #666;">
+                <p><strong>Примечание:</strong> Для избежания таймаута переводятся первые 10 материалов. Используйте Bulk Actions для большего количества.</p>
+            </div>
+        </div>
+
+        <script>
+            jQuery(document).ready(function($) {
+                $('#apyt-bulk-translate-current-post-type').on('click', function() {
+                    var button = $(this);
+                    var postType = button.data('post-type');
+
+                    button.prop('disabled', true).text('Перевод...');
+                    $('#apyt-bulk-posts-progress').show().text('Подготовка...');
+                    $('#apyt-bulk-posts-result').html('');
+
+                    $.post(ajaxurl, {
+                        action: 'apyt_bulk_translate_custom_post_type',
+                        post_type: postType,
+                        nonce: '<?php echo wp_create_nonce("apyt_bulk_translate"); ?>'
+                    }, function(response) {
+                        if (response.success) {
+                            $('#apyt-bulk-posts-result').html(
+                                '<div class="notice notice-success">' +
+                                '<p>' + response.data.message + '</p>' +
+                                '<p>Обработано материалов: ' + response.data.total_posts + '</p>' +
+                                '</div>'
+                            );
+                        } else {
+                            $('#apyt-bulk-posts-result').html(
+                                '<div class="notice notice-error">' +
+                                '<p>Ошибка: ' + response.data + '</p>' +
+                                '</div>'
+                            );
+                        }
+                        button.prop('disabled', false).text('Перевести "' + postType + '"');
+                        $('#apyt-bulk-posts-progress').hide();
+                    }).fail(function(xhr, status, error) {
+                        var errorMessage = 'Ошибка сети: ' + error;
+                        if (xhr.responseText) {
+                            try {
+                                var jsonResponse = JSON.parse(xhr.responseText);
+                                if (jsonResponse.data) {
+                                    errorMessage = jsonResponse.data;
+                                }
+                            } catch(e) {
+                                // Не JSON ответ
+                            }
+                        }
+
+                        $('#apyt-bulk-posts-result').html(
+                            '<div class="notice notice-error">' +
+                            '<p>' + errorMessage + '</p>' +
+                            '</div>'
+                        );
+                        button.prop('disabled', false).text('Перевести "' + postType + '"');
+                        $('#apyt-bulk-posts-progress').hide();
+                    });
+                });
+            });
+        </script>
+        <?php
+    }
+
+    public function bulk_translate_taxonomy_notice() {
         if (!function_exists('pll_languages_list')) return;
 
         $taxonomy = isset($_GET['taxonomy']) ? $_GET['taxonomy'] : '';
@@ -433,8 +794,6 @@ class APYT_Bulk_Actions {
                         );
                         button.prop('disabled', false).text('Перевести термины в "' + taxonomy + '"');
                         $('#apyt-bulk-progress').hide();
-
-                        console.error('APYT AJAX Error:', xhr, status, error);
                     });
                 });
             });
